@@ -324,3 +324,32 @@ func snapshotTree(t *testing.T, root string) map[string]string {
 	}
 	return items
 }
+
+func BenchmarkGenerate(b *testing.B) {
+	root := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if _, err := Generate("bench-module-"+strconv.Itoa(i), root, false); err != nil {
+			b.Fatalf("Generate returned error: %v", err)
+		}
+	}
+}
+
+func BenchmarkCheckFullProfile(b *testing.B) {
+	dir := b.TempDir()
+	if _, err := Generate("bench-module", dir, false); err != nil {
+		b.Fatalf("Generate returned error: %v", err)
+	}
+	modulePath := filepath.Join(dir, "module", "bench-module")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		if res := Check(modulePath, "full"); !res.Passed {
+			b.Fatalf("Check failed: %+v", res)
+		}
+	}
+}
