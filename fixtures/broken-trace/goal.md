@@ -1,0 +1,3 @@
+# Goal
+
+Broken trace fixture.

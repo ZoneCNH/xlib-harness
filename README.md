@@ -12,7 +12,9 @@
 
 ## Go Module
 
-本模块与 [xlib-standard](https://github.com/ZoneCNH/xlib-standard) 共享 Go module (`github.com/ZoneCNH/xlib-standard`)。代码位于 xlib-standard 仓库的 `cmd/` 和 `pkg/` 目录下。
+本模块拥有独立 Go module：`github.com/ZoneCNH/xlib-harness`。
+
+`xlib-standard` 仅作为标准源与模板来源被读取；xlib-harness 不允许引入 `github.com/ZoneCNH/xlib-standard` Go import 或 module dependency。
 
 ## 相关文档
 

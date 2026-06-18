@@ -1,0 +1,3 @@
+# Goal
+
+Format issue fixture.

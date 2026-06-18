@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: [self-hosted, Linux, X64, sre/deploy]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version: "1.23"
+
+      - name: Validate release contract
+        run: |
+          set -euo pipefail
+          test -s README.md
+          test -s .github/workflows/ci.yml
+          test -s .github/workflows/release.yml
+          grep -q "github.com/ZoneCNH/xlib-harness" README.md
+          grep -q "module/xlib-harness/SPEC.md" README.md
+          grep -q "module/xlib-harness/goal.md" README.md
+          grep -q "module/xlib-harness/TRACEABILITY.md" README.md
+          git diff --check
+
+      - name: Install xlibgate
+        run: go install github.com/ZoneCNH/xlibgate/cmd/xlibgate@v1.0.0
+
+      - name: Trust alignment checks
+        run: |
+          set -euo pipefail
+          XLIBGATE="$(go env GOPATH)/bin/xlibgate"
+          GOWORK=off "$XLIBGATE" trust identity --repo .
+          GOWORK=off "$XLIBGATE" trust template-residue --repo .
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          command -v gh >/dev/null
+          command -v jq >/dev/null
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --latest \
+              --draft=false \
+              --prerelease=false \
+              --verify-tag
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --generate-notes \
+              --latest \
+              --verify-tag
+          fi
+
+      - name: Verify GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          release_json="$(gh release view "${RELEASE_TAG}" --json isDraft,isPrerelease,tagName,url)"
+          printf '%s\n' "${release_json}"
+          printf '%s\n' "${release_json}" | jq -e --arg tag "${RELEASE_TAG}" '
+            .tagName == $tag
+            and .isDraft == false
+            and .isPrerelease == false
+            and (.url | length > 0)
+          '
