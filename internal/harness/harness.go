@@ -238,17 +238,22 @@ func Generate(module, outputRoot string, force bool) ([]string, error) {
 	}
 	sort.Strings(paths)
 	created := make([]string, 0, len(paths)+1)
+	if !force {
+		for _, rel := range paths {
+			dst := filepath.Join(target, rel)
+			if _, err := os.Stat(dst); err == nil {
+				return nil, fmt.Errorf("target file exists: %s", dst)
+			} else if !errors.Is(err, fs.ErrNotExist) {
+				return nil, err
+			}
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(target, "tasks"), 0o755); err != nil {
 		return nil, err
 	}
 	created = append(created, filepath.ToSlash(filepath.Join("module", module, "tasks")))
 	for _, rel := range paths {
 		dst := filepath.Join(target, rel)
-		if !force {
-			if _, err := os.Stat(dst); err == nil {
-				return nil, fmt.Errorf("target file exists: %s", dst)
-			}
-		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
 		}
@@ -325,30 +330,41 @@ func runSpecChecks(modulePath string, add func(string, bool, string)) {
 
 func runBoundaryChecks(modulePath string, add func(string, bool, string)) {
 	forbidden := []string{"observex", "configx", "resiliencx", "schedulex", "testkitx", "xlib-standard"}
-	var hits []string
-	_ = filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+	var issues []string
+	walkErr := filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), err))
+			return nil
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
-			hits = append(hits, fmt.Sprintf("%s: %v", path, readErr))
+			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), readErr))
 			return nil
 		}
 		for _, token := range forbidden {
 			if strings.Contains(string(data), token) {
-				hits = append(hits, fmt.Sprintf("%s imports or references forbidden dependency %s", filepath.ToSlash(path), token))
+				issues = append(issues, fmt.Sprintf("%s imports or references forbidden dependency %s", filepath.ToSlash(path), token))
 			}
 		}
 		return nil
 	})
-	add("dependency-boundary", len(hits) == 0, missingDetail(hits, "no forbidden production dependencies found"))
+	if walkErr != nil {
+		issues = append(issues, walkErr.Error())
+	}
+	add("dependency-boundary", len(issues) == 0, missingDetail(issues, "no forbidden production dependencies found"))
 }
 
 func runFormatChecks(modulePath string, add func(string, bool, string)) {
 	var issues []string
-	_ = filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !(strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml")) {
+	walkErr := filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), err))
+			return nil
+		}
+		if d.IsDir() || !(strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml")) {
 			return nil
 		}
 		file, openErr := os.Open(path)
@@ -374,6 +390,9 @@ func runFormatChecks(modulePath string, add func(string, bool, string)) {
 		}
 		return nil
 	})
+	if walkErr != nil {
+		issues = append(issues, walkErr.Error())
+	}
 	add("markdown-format", len(issues) == 0, missingDetail(issues, "markdown/yaml formatting passed"))
 }
 
