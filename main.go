@@ -6,6 +6,8 @@ import (
 	"github.com/ZoneCNH/xlib-harness/internal/harness"
 )
 
+var exit = os.Exit
+
 func main() {
-	os.Exit(harness.Run(os.Args[1:], os.Stdout, os.Stderr))
+	exit(harness.Run(os.Args[1:], os.Stdout, os.Stderr))
 }

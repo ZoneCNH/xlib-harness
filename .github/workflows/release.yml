@@ -24,6 +24,9 @@ jobs:
         with:
           go-version: "1.23"
 
+      - name: Download modules
+        run: go mod download
+
       - name: Validate release contract
         run: |
           set -euo pipefail
@@ -36,8 +39,11 @@ jobs:
           grep -q "module/xlib-harness/TRACEABILITY.md" README.md
           git diff --check
 
+      - name: Build, test, race, vet, coverage, and boundary gates
+        run: make ci
+
       - name: Install xlibgate
-        run: go install github.com/ZoneCNH/xlibgate/cmd/xlibgate@v1.0.0
+        run: go install github.com/ZoneCNH/xlibgate/cmd/xlibgate@v1.0.2
 
       - name: Trust alignment checks
         run: |

@@ -4,19 +4,19 @@
 
 ## 发布状态
 
-- 当前版本：`v0.1.1`
-- 代码验收基线：`335eef9`
-- 验收日期：2026-06-18
+- 当前版本：`v0.1.2`
+- 代码验收基线：`xlib-harness` 分支 v0.1.2 候选提交
+- 验收日期：2026-06-19
 
-`v0.1.1` 是 `v0.1.0` 之后的补丁发布，重点补齐可机械复验的验收证据：单测、race、vet、覆盖率、生成与完整检查基准、CLI smoke、只读行为、负例门禁、安全边界和 `xlib-standard` Go import/module dependency 禁止。
+`v0.1.2` 是验收硬化发布，重点补齐生产级 spec/trace/boundary/format 门禁、公开 Go API、CI/CD、Makefile 聚合验收和 100% 语句覆盖率门槛。
 
 ## 职责
 
-- **generate / scaffold**：基于 xlib-standard 模板生成新模块骨架
-- **spec-lint**：SPEC.md 结构合规性检查
-- **boundary-check**：模块边界守卫（testkitx 生产导入检测、依赖矩阵验证）
+- **generate / scaffold**：生成带 23 节 SPEC、追溯矩阵、Goal、计划和任务文件的新模块骨架
+- **spec-lint**：SPEC.md 结构、FR WHEN/THEN、AC 可验证性和测试命令检查
+- **boundary-check**：模块边界守卫（Go import、go.mod 禁止依赖检测）
 - **traceability-gate**：FR→AC→TC 追溯链完整性验证
-- **format-check**：Go 代码格式一致性检查
+- **format-check**：Markdown 文档格式、空链接、表格列数和模板残留检查
 
 ## Go Module
 
@@ -32,18 +32,21 @@
 go test ./...
 go test ./... -race -count=1
 go vet ./...
-go test ./... -coverprofile=coverage.out
+go test ./... -coverprofile=coverage.out -covermode=count
+go tool cover -func=coverage.out
 go test -bench=. ./...
+make ci
 ```
 
-2026-06-18 本地验收结果：
+2026-06-19 本地验收结果：
 
 - `go test ./...`：PASS
 - `go test ./... -race -count=1`：PASS
 - `go vet ./...`：PASS
-- 覆盖率：total `88.8%`，核心包 `89.2%`
-- `BenchmarkGenerate`：约 `220281 ns/op`
-- `BenchmarkCheckFullProfile`：约 `223926 ns/op`
+- `go test ./... -coverprofile=coverage.out -covermode=count`：PASS
+- `go tool cover -func=coverage.out`：total `100.0%`
+- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `113809 ns/op`，`BenchmarkCheckFullProfile` 约 `733850 ns/op`
+- `make ci`：PASS
 
 ## 相关文档
 

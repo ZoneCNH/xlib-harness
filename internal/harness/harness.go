@@ -6,13 +6,24 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+)
+
+type GateProfile string
+
+const (
+	ProfileSpec     GateProfile = "spec"
+	ProfileBoundary GateProfile = "boundary"
+	ProfileFull     GateProfile = "full"
 )
 
 type CheckResult struct {
@@ -29,9 +40,81 @@ type CheckItem struct {
 	Detail string `json:"detail"`
 }
 
+type GenerateResult struct {
+	Module       string   `json:"module"`
+	Root         string   `json:"root"`
+	FilesCreated []string `json:"files_created"`
+	Warnings     []string `json:"warnings,omitempty"`
+}
+
+type GenerateOption func(*generateConfig)
+
+type Generator interface {
+	Generate(module string, opts ...GenerateOption) (*GenerateResult, error)
+}
+
+type HarnessGate interface {
+	Check(modulePath string, profile GateProfile) CheckResult
+}
+
+type StdlibHarness struct {
+	OutputRoot string
+	Force      bool
+}
+
+type generateConfig struct {
+	outputRoot string
+	force      bool
+}
+
 type options struct {
 	stdout io.Writer
 	stderr io.Writer
+}
+
+var (
+	absPath      = filepath.Abs
+	statPath     = os.Stat
+	mkdirAll     = os.MkdirAll
+	writeFile    = os.WriteFile
+	readFile     = os.ReadFile
+	walkDir      = filepath.WalkDir
+	mkdirTemp    = os.MkdirTemp
+	removeAll    = os.RemoveAll
+	openScanFile = func(path string) (io.ReadCloser, error) { return os.Open(path) }
+	generateDocs = Generate
+	checkDocs    = Check
+)
+
+func WithOutputRoot(root string) GenerateOption {
+	return func(cfg *generateConfig) {
+		cfg.outputRoot = root
+	}
+}
+
+func WithForce(force bool) GenerateOption {
+	return func(cfg *generateConfig) {
+		cfg.force = force
+	}
+}
+
+func (h StdlibHarness) Generate(module string, opts ...GenerateOption) (*GenerateResult, error) {
+	cfg := generateConfig{outputRoot: h.OutputRoot, force: h.Force}
+	if cfg.outputRoot == "" {
+		cfg.outputRoot = "."
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	files, err := Generate(module, cfg.outputRoot, cfg.force)
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateResult{Module: module, Root: cfg.outputRoot, FilesCreated: files}, nil
+}
+
+func (h StdlibHarness) Check(modulePath string, profile GateProfile) CheckResult {
+	return Check(modulePath, string(profile))
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -77,7 +160,7 @@ func runGenerate(args []string, opts options) int {
 		fmt.Fprintln(opts.stderr, "generate requires exactly one module name")
 		return 2
 	}
-	files, err := Generate(positional[0], output, force)
+	files, err := generateDocs(positional[0], output, force)
 	if err != nil {
 		fmt.Fprintln(opts.stderr, err)
 		return 1
@@ -98,7 +181,7 @@ func runCheck(args []string, opts options) int {
 		fmt.Fprintln(opts.stderr, "check requires exactly one module path")
 		return 2
 	}
-	res := Check(positional[0], profile)
+	res := checkDocs(positional[0], profile)
 	writeResult(opts.stdout, res, asJSON)
 	if !res.Passed {
 		return 1
@@ -166,17 +249,17 @@ func runValidate(args []string, opts options) int {
 		fmt.Fprintln(opts.stderr, "validate currently supports only --template")
 		return 2
 	}
-	dir, err := os.MkdirTemp("", "xlib-harness-template-*")
+	dir, err := mkdirTemp("", "xlib-harness-template-*")
 	if err != nil {
 		fmt.Fprintln(opts.stderr, err)
 		return 1
 	}
-	defer os.RemoveAll(dir)
-	if _, err := Generate("template-self", dir, false); err != nil {
+	defer removeAll(dir)
+	if _, err := generateDocs("template-self", dir, false); err != nil {
 		fmt.Fprintln(opts.stderr, err)
 		return 1
 	}
-	res := Check(filepath.Join(dir, "module", "template-self"), "full")
+	res := checkDocs(filepath.Join(dir, "module", "template-self"), "full")
 	writeResult(opts.stdout, res, *asJSON)
 	if !res.Passed {
 		return 1
@@ -212,12 +295,12 @@ func Generate(module, outputRoot string, force bool) ([]string, error) {
 	if !moduleNameRE.MatchString(module) || strings.Contains(module, "..") || strings.ContainsAny(module, `/\\`) {
 		return nil, fmt.Errorf("invalid module name %q: use letters, numbers, dash, or underscore only", module)
 	}
-	root, err := filepath.Abs(outputRoot)
+	root, err := absPath(outputRoot)
 	if err != nil {
 		return nil, err
 	}
 	target := filepath.Join(root, "module", module)
-	cleanTarget, err := filepath.Abs(target)
+	cleanTarget, err := absPath(target)
 	if err != nil {
 		return nil, err
 	}
@@ -241,23 +324,23 @@ func Generate(module, outputRoot string, force bool) ([]string, error) {
 	if !force {
 		for _, rel := range paths {
 			dst := filepath.Join(target, rel)
-			if _, err := os.Stat(dst); err == nil {
+			if _, err := statPath(dst); err == nil {
 				return nil, fmt.Errorf("target file exists: %s", dst)
 			} else if !errors.Is(err, fs.ErrNotExist) {
 				return nil, err
 			}
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(target, "tasks"), 0o755); err != nil {
+	if err := mkdirAll(filepath.Join(target, "tasks"), 0o755); err != nil {
 		return nil, err
 	}
 	created = append(created, filepath.ToSlash(filepath.Join("module", module, "tasks")))
 	for _, rel := range paths {
 		dst := filepath.Join(target, rel)
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		if err := mkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(dst, []byte(entries[rel]), 0o644); err != nil {
+		if err := writeFile(dst, []byte(entries[rel]), 0o644); err != nil {
 			return nil, err
 		}
 		created = append(created, filepath.ToSlash(filepath.Join("module", module, rel)))
@@ -274,7 +357,7 @@ func Check(modulePath, profile string) CheckResult {
 			res.Passed = false
 		}
 	}
-	if _, err := os.Stat(modulePath); err != nil {
+	if _, err := statPath(modulePath); err != nil {
 		add("module-exists", false, err.Error())
 		res.Summary = "module path is not readable"
 		return res
@@ -311,12 +394,12 @@ func runSpecChecks(modulePath string, add func(string, bool, string)) {
 	required := []string{"SPEC.md", "TRACEABILITY.md", "goal.md", "IMPLEMENTATION-PLAN.md"}
 	for _, rel := range required {
 		p := filepath.Join(modulePath, rel)
-		info, err := os.Stat(p)
+		info, err := statPath(p)
 		add("required-file:"+rel, err == nil && !info.IsDir(), detailForFile(p, err))
 	}
-	tasksInfo, err := os.Stat(filepath.Join(modulePath, "tasks"))
+	tasksInfo, err := statPath(filepath.Join(modulePath, "tasks"))
 	add("required-dir:tasks", err == nil && tasksInfo.IsDir(), detailForFile(filepath.Join(modulePath, "tasks"), err))
-	spec, err := os.ReadFile(filepath.Join(modulePath, "SPEC.md"))
+	spec, err := readFile(filepath.Join(modulePath, "SPEC.md"))
 	if err != nil {
 		add("spec-readable", false, err.Error())
 		return
@@ -325,30 +408,45 @@ func runSpecChecks(modulePath string, add func(string, bool, string)) {
 	missing := missingTokens(text, []string{"FR-001", "WHEN", "THEN", "Acceptance Criteria", "TC-001"})
 	add("spec-fr-ac-tc-structure", len(missing) == 0, missingDetail(missing, "SPEC includes FR/WHEN/THEN/AC/TC markers"))
 	headings := countHeadings(text)
-	add("spec-section-depth", headings >= 6, fmt.Sprintf("%d markdown headings found", headings))
+	add("spec-section-depth", headings >= 24, fmt.Sprintf("%d markdown headings found", headings))
+	sectionGaps := missingSpecSections(text)
+	add("spec-23-section-structure", len(sectionGaps) == 0, missingDetail(sectionGaps, "all 23 canonical SPEC sections present"))
+	frIssues := functionalRequirementIssues(text)
+	add("spec-fr-when-then", len(frIssues) == 0, missingDetail(frIssues, "all FR rows include WHEN and THEN"))
+	acIssues := acceptanceCriteriaIssues(text)
+	add("spec-ac-verifiability", len(acIssues) == 0, missingDetail(acIssues, "acceptance criteria map to verifiable test cases"))
+	tcIssues := testCaseIssues(text)
+	add("spec-test-commands", len(tcIssues) == 0, missingDetail(tcIssues, "test cases include runnable commands"))
 }
 
 func runBoundaryChecks(modulePath string, add func(string, bool, string)) {
-	forbidden := []string{"observex", "configx", "resiliencx", "schedulex", "testkitx", "xlib-standard"}
 	var issues []string
-	walkErr := filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
+	walkErr := walkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), err))
 			return nil
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if d.IsDir() {
 			return nil
 		}
-		data, readErr := os.ReadFile(path)
+		if filepath.Base(path) == "go.mod" {
+			data, readErr := readFile(path)
+			if readErr != nil {
+				issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), readErr))
+				return nil
+			}
+			issues = append(issues, forbiddenModuleRefs(path, string(data))...)
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, readErr := readFile(path)
 		if readErr != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), readErr))
 			return nil
 		}
-		for _, token := range forbidden {
-			if strings.Contains(string(data), token) {
-				issues = append(issues, fmt.Sprintf("%s imports or references forbidden dependency %s", filepath.ToSlash(path), token))
-			}
-		}
+		issues = append(issues, forbiddenImportRefs(path, data)...)
 		return nil
 	})
 	if walkErr != nil {
@@ -359,7 +457,7 @@ func runBoundaryChecks(modulePath string, add func(string, bool, string)) {
 
 func runFormatChecks(modulePath string, add func(string, bool, string)) {
 	var issues []string
-	walkErr := filepath.WalkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
+	walkErr := walkDir(modulePath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), err))
 			return nil
@@ -367,7 +465,7 @@ func runFormatChecks(modulePath string, add func(string, bool, string)) {
 		if d.IsDir() || !(strings.HasSuffix(path, ".md") || strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml")) {
 			return nil
 		}
-		file, openErr := os.Open(path)
+		file, openErr := openScanFile(path)
 		if openErr != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", path, openErr))
 			return nil
@@ -375,15 +473,11 @@ func runFormatChecks(modulePath string, add func(string, bool, string)) {
 		defer file.Close()
 		scanner := bufio.NewScanner(file)
 		line := 0
+		table := markdownTableState{}
 		for scanner.Scan() {
 			line++
 			txt := scanner.Text()
-			if strings.TrimRight(txt, " \t") != txt {
-				issues = append(issues, fmt.Sprintf("%s:%d trailing whitespace", filepath.ToSlash(path), line))
-			}
-			if strings.Contains(txt, "FORMAT-ISSUE") {
-				issues = append(issues, fmt.Sprintf("%s:%d explicit format issue marker", filepath.ToSlash(path), line))
-			}
+			issues = append(issues, formatLineIssues(path, line, txt, &table)...)
 		}
 		if err := scanner.Err(); err != nil {
 			issues = append(issues, fmt.Sprintf("%s: %v", path, err))
@@ -397,23 +491,30 @@ func runFormatChecks(modulePath string, add func(string, bool, string)) {
 }
 
 func runTraceChecks(modulePath string, add func(string, bool, string)) {
-	specBytes, specErr := os.ReadFile(filepath.Join(modulePath, "SPEC.md"))
-	traceBytes, traceErr := os.ReadFile(filepath.Join(modulePath, "TRACEABILITY.md"))
+	specBytes, specErr := readFile(filepath.Join(modulePath, "SPEC.md"))
+	traceBytes, traceErr := readFile(filepath.Join(modulePath, "TRACEABILITY.md"))
 	if specErr != nil || traceErr != nil {
 		add("traceability-readable", false, fmt.Sprintf("SPEC: %v TRACEABILITY: %v", specErr, traceErr))
 		return
 	}
 	frs := uniqueMatches(`FR-\d{3}`, string(specBytes))
+	acs := uniqueMatches(`AC-\d{3}`, string(specBytes))
+	tcs := uniqueMatches(`TC-\d{3}`, string(specBytes))
 	trace := string(traceBytes)
 	var gaps []string
 	for _, fr := range frs {
-		if !strings.Contains(trace, fr) {
-			gaps = append(gaps, "missing "+fr+" in TRACEABILITY.md")
+		if !traceRowCloses(trace, fr) {
+			gaps = append(gaps, "missing closed "+fr+" -> AC -> TC row in TRACEABILITY.md")
 		}
 	}
-	for _, token := range []string{"AC-001", "TC-001"} {
-		if !strings.Contains(trace, token) {
-			gaps = append(gaps, "missing "+token+" in TRACEABILITY.md")
+	for _, ac := range acs {
+		if !strings.Contains(trace, ac) {
+			gaps = append(gaps, "missing "+ac+" in TRACEABILITY.md")
+		}
+	}
+	for _, tc := range tcs {
+		if !strings.Contains(trace, tc) {
+			gaps = append(gaps, "missing "+tc+" in TRACEABILITY.md")
 		}
 	}
 	add("traceability-chain", len(gaps) == 0, missingDetail(gaps, "FR/AC/TC chain closed"))
@@ -454,6 +555,180 @@ func countHeadings(text string) int {
 	return count
 }
 
+func missingSpecSections(text string) []string {
+	seen := map[int]bool{}
+	re := regexp.MustCompile(`^##\s+(\d+)\.`)
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		match := re.FindStringSubmatch(scanner.Text())
+		if len(match) == 2 {
+			n, err := strconv.Atoi(match[1])
+			if err == nil {
+				seen[n] = true
+			}
+		}
+	}
+	var missing []string
+	for i := 1; i <= 23; i++ {
+		if !seen[i] {
+			missing = append(missing, fmt.Sprintf("missing section %d", i))
+		}
+	}
+	return missing
+}
+
+func functionalRequirementIssues(text string) []string {
+	var issues []string
+	frRows := 0
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(tableRowID(line), "FR-") {
+			continue
+		}
+		frRows++
+		if !strings.Contains(line, "WHEN") || !strings.Contains(line, "THEN") {
+			issues = append(issues, "FR row missing WHEN/THEN: "+line)
+		}
+	}
+	if frRows == 0 {
+		issues = append(issues, "missing FR table rows")
+	}
+	return issues
+}
+
+func acceptanceCriteriaIssues(text string) []string {
+	var issues []string
+	acRows := 0
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(tableRowID(line), "AC-") {
+			continue
+		}
+		acRows++
+		if !regexp.MustCompile(`TC-\d{3}`).MatchString(line) {
+			issues = append(issues, "AC row missing TC evidence: "+line)
+		}
+	}
+	if acRows == 0 {
+		issues = append(issues, "missing AC table rows")
+	}
+	return issues
+}
+
+func testCaseIssues(text string) []string {
+	var issues []string
+	tcRows := 0
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(tableRowID(line), "TC-") {
+			continue
+		}
+		tcRows++
+		if !strings.Contains(line, "xlib-harness") && !strings.Contains(line, "go test") && !strings.Contains(line, "make ") {
+			issues = append(issues, "TC row missing runnable command: "+line)
+		}
+	}
+	if tcRows == 0 {
+		issues = append(issues, "missing TC table rows")
+	}
+	return issues
+}
+
+func tableRowID(line string) string {
+	if !strings.HasPrefix(strings.TrimSpace(line), "|") {
+		return ""
+	}
+	for _, cell := range strings.Split(line, "|") {
+		cell = strings.TrimSpace(cell)
+		if cell != "" {
+			return cell
+		}
+	}
+	return ""
+}
+
+var forbiddenDependencies = []string{"observex", "configx", "resiliencx", "schedulex", "testkitx", "xlib-standard"}
+
+func forbiddenModuleRefs(path, text string) []string {
+	var issues []string
+	for _, dep := range forbiddenDependencies {
+		if strings.Contains(text, "github.com/ZoneCNH/"+dep) {
+			issues = append(issues, fmt.Sprintf("%s requires forbidden dependency %s", filepath.ToSlash(path), dep))
+		}
+	}
+	return issues
+}
+
+func forbiddenImportRefs(path string, data []byte) []string {
+	file, err := parser.ParseFile(token.NewFileSet(), path, data, parser.ImportsOnly)
+	if err != nil {
+		return []string{fmt.Sprintf("%s: %v", filepath.ToSlash(path), err)}
+	}
+	var issues []string
+	for _, imp := range file.Imports {
+		importPath, _ := strconv.Unquote(imp.Path.Value)
+		for _, dep := range forbiddenDependencies {
+			if importPath == "github.com/ZoneCNH/"+dep || strings.HasPrefix(importPath, "github.com/ZoneCNH/"+dep+"/") {
+				issues = append(issues, fmt.Sprintf("%s imports forbidden dependency %s", filepath.ToSlash(path), dep))
+			}
+		}
+	}
+	return issues
+}
+
+type markdownTableState struct {
+	columns int
+}
+
+func formatLineIssues(path string, line int, txt string, table *markdownTableState) []string {
+	var issues []string
+	slashPath := filepath.ToSlash(path)
+	if strings.TrimRight(txt, " \t") != txt {
+		issues = append(issues, fmt.Sprintf("%s:%d trailing whitespace", slashPath, line))
+	}
+	if strings.Contains(txt, "FORMAT-ISSUE") {
+		issues = append(issues, fmt.Sprintf("%s:%d explicit format issue marker", slashPath, line))
+	}
+	issues = append(issues, markdownLinkIssues(slashPath, line, txt)...)
+	if strings.HasPrefix(strings.TrimSpace(txt), "|") {
+		cols := strings.Count(txt, "|")
+		if table.columns == 0 {
+			table.columns = cols
+		} else if table.columns != cols {
+			issues = append(issues, fmt.Sprintf("%s:%d table column count changed from %d to %d", slashPath, line, table.columns, cols))
+		}
+	} else if strings.TrimSpace(txt) == "" {
+		table.columns = 0
+	}
+	return issues
+}
+
+func markdownLinkIssues(path string, line int, txt string) []string {
+	var issues []string
+	re := regexp.MustCompile(`\[[^\]]+\]\(([^)]*)\)`)
+	for _, match := range re.FindAllStringSubmatch(txt, -1) {
+		target := strings.TrimSpace(match[1])
+		if target == "" {
+			issues = append(issues, fmt.Sprintf("%s:%d empty markdown link target", path, line))
+		}
+	}
+	return issues
+}
+
+func traceRowCloses(trace, fr string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(trace))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, fr) && regexp.MustCompile(`AC-\d{3}`).MatchString(line) && regexp.MustCompile(`TC-\d{3}`).MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
 func uniqueMatches(expr, text string) []string {
 	re := regexp.MustCompile(expr)
 	found := map[string]bool{}
@@ -469,38 +744,40 @@ func uniqueMatches(expr, text string) []string {
 }
 
 func specTemplate(module string) string {
-	return fmt.Sprintf(`# %s SPEC
-
-## 1. Summary
-
-Generated Foundation module skeleton.
-
-## 2. Goals
-
-- Provide a traceable implementation plan.
-
-## 3. Functional Requirements
-
-| ID | Requirement | WHEN | THEN |
-| --- | --- | --- | --- |
-| FR-001 | bootstrap | WHEN the module is generated | THEN required documentation and tasks exist |
-
-## 4. Acceptance Criteria
-
-| AC ID | FR Ref | Criterion |
-| --- | --- | --- |
-| AC-001 | FR-001 | Generated module contains SPEC.md, TRACEABILITY.md, goal.md, tasks/, and IMPLEMENTATION-PLAN.md |
-
-## 5. Tests
-
-| TC ID | Covers | Command |
-| --- | --- | --- |
-| TC-001 | FR-001 / AC-001 | xlib-harness check . --profile full |
-
-## 6. Boundaries
-
-Only stdlib and approved Foundation dependencies are allowed.
-`, module)
+	sections := []struct {
+		title string
+		body  string
+	}{
+		{"Summary", "Generated Foundation module skeleton."},
+		{"Goals", "- Provide a traceable implementation plan."},
+		{"Non-Goals", "- Avoid adding runtime behavior before the module spec is approved."},
+		{"Stakeholders", "- Module owner\n- Foundation maintainers"},
+		{"Glossary", "- FR: Functional requirement\n- AC: Acceptance criterion\n- TC: Test case"},
+		{"Functional Requirements", "| ID | Requirement | WHEN | THEN |\n| --- | --- | --- | --- |\n| FR-001 | bootstrap | WHEN the module is generated | THEN required documentation and tasks exist |"},
+		{"Business Rules", "| ID | Rule |\n| --- | --- |\n| BR-001 | Generated work remains local until reviewed. |"},
+		{"Acceptance Criteria", "| AC ID | FR Ref | Criterion |\n| --- | --- | --- |\n| AC-001 | FR-001 | TC-001 proves SPEC.md, TRACEABILITY.md, goal.md, tasks/, and IMPLEMENTATION-PLAN.md exist. |"},
+		{"Tests", "| TC ID | Covers | Command |\n| --- | --- | --- |\n| TC-001 | FR-001 / AC-001 | xlib-harness check . --profile full |"},
+		{"Traceability", "TRACEABILITY.md must close every FR -> AC -> TC chain."},
+		{"Interfaces", "No public code interface is generated by this skeleton."},
+		{"Data Model", "No persisted application data is generated by this skeleton."},
+		{"Error Handling", "Generation and gate failures must report actionable file-level details."},
+		{"Security", "No credentials or private endpoints may be committed."},
+		{"Privacy", "No personal or private data is required."},
+		{"Performance", "Local validation should complete in under one second for a skeleton module."},
+		{"Observability", "Gate output must include pass/fail summaries and itemized checks."},
+		{"Operations", "Use local commands first, then CI gates before release."},
+		{"CI Gates", "Run go test ./..., go test ./... -race -count=1, go vet ./..., and xlib-harness check."},
+		{"Migration", "Existing generated files are overwritten only when --force is explicit."},
+		{"Risks", "- Incomplete traceability\n- Accidental cross-module dependencies"},
+		{"Open Questions", "- Replace this generated skeleton with the module-specific approved spec."},
+		{"Changelog", "- Initial generated skeleton."},
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# %s SPEC\n\n", module)
+	for i, section := range sections {
+		fmt.Fprintf(&b, "## %d. %s\n\n%s\n\n", i+1, section.title, section.body)
+	}
+	return b.String()
 }
 
 func traceTemplate(module string) string {

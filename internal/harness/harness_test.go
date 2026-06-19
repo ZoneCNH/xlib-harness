@@ -3,6 +3,9 @@ package harness
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,6 +51,134 @@ func TestGeneratePreflightsExistingTargets(t *testing.T) {
 	}
 }
 
+func TestStdlibHarnessAPI(t *testing.T) {
+	dir := t.TempDir()
+	h := StdlibHarness{OutputRoot: dir}
+	result, err := h.Generate("api-module")
+	if err != nil {
+		t.Fatalf("StdlibHarness.Generate returned error: %v", err)
+	}
+	if result.Module != "api-module" || result.Root != dir || len(result.FilesCreated) == 0 {
+		t.Fatalf("unexpected generate result: %+v", result)
+	}
+	if res := h.Check(filepath.Join(dir, "module", "api-module"), ProfileFull); !res.Passed {
+		t.Fatalf("StdlibHarness.Check failed: %+v", res)
+	}
+	if _, err := h.Generate("api-module"); err == nil {
+		t.Fatal("expected StdlibHarness.Generate to return existing-file error")
+	}
+
+	override := t.TempDir()
+	result, err = h.Generate("api-module-override", WithOutputRoot(override), WithForce(true))
+	if err != nil {
+		t.Fatalf("StdlibHarness.Generate with options returned error: %v", err)
+	}
+	if result.Root != override {
+		t.Fatalf("override root=%q, want %q", result.Root, override)
+	}
+
+	defaultRoot := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(defaultRoot); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+	result, err = (StdlibHarness{}).Generate("default-root")
+	if err != nil {
+		t.Fatalf("StdlibHarness.Generate default root returned error: %v", err)
+	}
+	if result.Root != "." {
+		t.Fatalf("default root=%q, want .", result.Root)
+	}
+}
+
+func TestGenerateOperationalFailures(t *testing.T) {
+	t.Run("root abs fails", func(t *testing.T) {
+		replaceHook(t, &absPath, func(string) (string, error) {
+			return "", errors.New("abs root failed")
+		})
+		if _, err := Generate("demo", t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "abs root failed") {
+			t.Fatalf("err=%v, want root abs failure", err)
+		}
+	})
+
+	t.Run("target abs fails", func(t *testing.T) {
+		calls := 0
+		replaceHook(t, &absPath, func(path string) (string, error) {
+			calls++
+			if calls == 2 {
+				return "", errors.New("abs target failed")
+			}
+			return filepath.Clean(path), nil
+		})
+		if _, err := Generate("demo", t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "abs target failed") {
+			t.Fatalf("err=%v, want target abs failure", err)
+		}
+	})
+
+	t.Run("target escape is refused", func(t *testing.T) {
+		calls := 0
+		replaceHook(t, &absPath, func(path string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "/safe/root", nil
+			}
+			return "/outside/module/demo", nil
+		})
+		if _, err := Generate("demo", t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "outside output module") {
+			t.Fatalf("err=%v, want escape refusal", err)
+		}
+	})
+
+	t.Run("stat fails", func(t *testing.T) {
+		replaceHook(t, &statPath, func(string) (os.FileInfo, error) {
+			return nil, errors.New("stat denied")
+		})
+		if _, err := Generate("demo", t.TempDir(), false); err == nil || !strings.Contains(err.Error(), "stat denied") {
+			t.Fatalf("err=%v, want stat failure", err)
+		}
+	})
+
+	t.Run("task dir mkdir fails", func(t *testing.T) {
+		replaceHook(t, &mkdirAll, func(string, fs.FileMode) error {
+			return errors.New("mkdir task failed")
+		})
+		if _, err := Generate("demo", t.TempDir(), true); err == nil || !strings.Contains(err.Error(), "mkdir task failed") {
+			t.Fatalf("err=%v, want mkdir failure", err)
+		}
+	})
+
+	t.Run("file dir mkdir fails", func(t *testing.T) {
+		calls := 0
+		replaceHook(t, &mkdirAll, func(string, fs.FileMode) error {
+			calls++
+			if calls == 2 {
+				return errors.New("mkdir file failed")
+			}
+			return nil
+		})
+		if _, err := Generate("demo", t.TempDir(), true); err == nil || !strings.Contains(err.Error(), "mkdir file failed") {
+			t.Fatalf("err=%v, want file mkdir failure", err)
+		}
+	})
+
+	t.Run("write fails", func(t *testing.T) {
+		replaceHook(t, &writeFile, func(string, []byte, fs.FileMode) error {
+			return errors.New("write failed")
+		})
+		if _, err := Generate("demo", t.TempDir(), true); err == nil || !strings.Contains(err.Error(), "write failed") {
+			t.Fatalf("err=%v, want write failure", err)
+		}
+	})
+}
+
 func TestCheckProfilesAndFailures(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -75,6 +206,32 @@ func TestCheckProfilesAndFailures(t *testing.T) {
 	}
 }
 
+func TestSpecMissingFilesAreItemized(t *testing.T) {
+	dir := t.TempDir()
+	res := Check(dir, "spec")
+	if res.Passed {
+		t.Fatalf("empty module should fail spec checks: %+v", res)
+	}
+	for _, want := range []string{"required-file:SPEC.md", "required-dir:tasks", "spec-readable"} {
+		if !strings.Contains(flattenNamesAndDetails(res), want) {
+			t.Fatalf("result missing %q: %+v", want, res)
+		}
+	}
+}
+
+func TestSpecReadFailureIsReported(t *testing.T) {
+	replaceHook(t, &readFile, func(string) ([]byte, error) {
+		return nil, errors.New("read spec failed")
+	})
+	res := Check("../../fixtures/compliant-module", "spec")
+	if res.Passed {
+		t.Fatalf("spec read failure should fail: %+v", res)
+	}
+	if !strings.Contains(flattenDetails(res), "read spec failed") {
+		t.Fatalf("missing read failure detail: %+v", res)
+	}
+}
+
 func TestBoundaryRejectsXlibStandardImport(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "bad.go"), []byte(`package baddep
@@ -90,6 +247,73 @@ import _ "github.com/ZoneCNH/xlib-standard"
 	if !strings.Contains(flattenDetails(res), "xlib-standard") {
 		t.Fatalf("expected boundary details to mention xlib-standard: %+v", res)
 	}
+}
+
+func TestBoundaryOperationalFailures(t *testing.T) {
+	t.Run("walk callback and root errors", func(t *testing.T) {
+		replaceHook(t, &walkDir, func(root string, fn fs.WalkDirFunc) error {
+			_ = fn(filepath.Join(root, "blocked.go"), fakeDirEntry{name: "blocked.go"}, errors.New("walk callback failed"))
+			return errors.New("walk root failed")
+		})
+		res := Check("../../fixtures/compliant-module", "boundary")
+		if res.Passed {
+			t.Fatalf("walk errors should fail boundary: %+v", res)
+		}
+		for _, want := range []string{"walk callback failed", "walk root failed"} {
+			if !strings.Contains(flattenDetails(res), want) {
+				t.Fatalf("missing %q in %+v", want, res)
+			}
+		}
+	})
+
+	t.Run("read errors", func(t *testing.T) {
+		replaceHook(t, &walkDir, func(root string, fn fs.WalkDirFunc) error {
+			if err := fn(filepath.Join(root, "go.mod"), fakeDirEntry{name: "go.mod"}, nil); err != nil {
+				return err
+			}
+			return fn(filepath.Join(root, "bad.go"), fakeDirEntry{name: "bad.go"}, nil)
+		})
+		replaceHook(t, &readFile, func(path string) ([]byte, error) {
+			return nil, fmtError("read failed for " + filepath.Base(path))
+		})
+		res := Check("../../fixtures/compliant-module", "boundary")
+		if res.Passed {
+			t.Fatalf("read errors should fail boundary: %+v", res)
+		}
+		for _, want := range []string{"read failed for go.mod", "read failed for bad.go"} {
+			if !strings.Contains(flattenDetails(res), want) {
+				t.Fatalf("missing %q in %+v", want, res)
+			}
+		}
+	})
+
+	t.Run("go mod forbidden dependency", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module demo\n\nrequire github.com/ZoneCNH/xlib-standard v0.0.0\n"), 0o644); err != nil {
+			t.Fatalf("write go.mod: %v", err)
+		}
+		res := Check(dir, "boundary")
+		if res.Passed {
+			t.Fatalf("forbidden go.mod dependency should fail: %+v", res)
+		}
+		if !strings.Contains(flattenDetails(res), "xlib-standard") {
+			t.Fatalf("missing dependency detail: %+v", res)
+		}
+	})
+
+	t.Run("invalid go import syntax", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "bad.go"), []byte("package bad\nimport \n"), 0o644); err != nil {
+			t.Fatalf("write bad.go: %v", err)
+		}
+		res := Check(dir, "boundary")
+		if res.Passed {
+			t.Fatalf("invalid go file should fail boundary: %+v", res)
+		}
+		if !strings.Contains(flattenDetails(res), "missing import path") {
+			t.Fatalf("missing parser detail: %+v", res)
+		}
+	})
 }
 
 func TestRunReturnsNonZeroForFailedGate(t *testing.T) {
@@ -126,6 +350,17 @@ func TestValidateTemplate(t *testing.T) {
 func flattenDetails(res CheckResult) string {
 	var b strings.Builder
 	for _, item := range res.Checks {
+		b.WriteString(item.Detail)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func flattenNamesAndDetails(res CheckResult) string {
+	var b strings.Builder
+	for _, item := range res.Checks {
+		b.WriteString(item.Name)
+		b.WriteByte(':')
 		b.WriteString(item.Detail)
 		b.WriteByte('\n')
 	}
@@ -274,6 +509,59 @@ func TestRunValidateTemplateJSONAndMisuse(t *testing.T) {
 	if !strings.Contains(stderr.String(), "validate currently supports only --template") {
 		t.Fatalf("validate misuse stderr missing guidance: %q", stderr.String())
 	}
+
+	out.Reset()
+	stderr.Reset()
+	if code := Run([]string{"validate", "--bogus"}, &out, &stderr); code != 2 {
+		t.Fatalf("validate flag error code=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+	}
+}
+
+func TestRunValidateOperationalFailures(t *testing.T) {
+	t.Run("mkdir temp fails", func(t *testing.T) {
+		replaceHook(t, &mkdirTemp, func(string, string) (string, error) {
+			return "", errors.New("temp failed")
+		})
+		var out, stderr bytes.Buffer
+		if code := Run([]string{"validate", "--template"}, &out, &stderr); code != 1 {
+			t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "temp failed") {
+			t.Fatalf("stderr missing temp failure: %q", stderr.String())
+		}
+	})
+
+	t.Run("generate fails", func(t *testing.T) {
+		replaceHook(t, &generateDocs, func(string, string, bool) ([]string, error) {
+			return nil, errors.New("generate failed")
+		})
+		var out, stderr bytes.Buffer
+		if code := Run([]string{"validate", "--template"}, &out, &stderr); code != 1 {
+			t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "generate failed") {
+			t.Fatalf("stderr missing generate failure: %q", stderr.String())
+		}
+	})
+
+	t.Run("check fails", func(t *testing.T) {
+		replaceHook(t, &checkDocs, func(modulePath, profile string) CheckResult {
+			return CheckResult{
+				Module:  modulePath,
+				Profile: profile,
+				Passed:  false,
+				Checks:  []CheckItem{{Name: "forced", Passed: false, Detail: "forced fail"}},
+				Summary: "forced summary",
+			}
+		})
+		var out, stderr bytes.Buffer
+		if code := Run([]string{"validate", "--template"}, &out, &stderr); code != 1 {
+			t.Fatalf("code=%d stdout=%s stderr=%s", code, out.String(), stderr.String())
+		}
+		if !strings.Contains(out.String(), "forced fail") {
+			t.Fatalf("stdout missing forced check detail: %q", out.String())
+		}
+	})
 }
 
 func TestCheckIsReadOnlyForGeneratedModule(t *testing.T) {
@@ -300,6 +588,154 @@ func TestCheckIsReadOnlyForGeneratedModule(t *testing.T) {
 			t.Fatalf("check mutated %s: before=%q after=%q", path, want, got)
 		}
 	}
+}
+
+func TestFormatOperationalFailuresAndRules(t *testing.T) {
+	t.Run("walk errors", func(t *testing.T) {
+		replaceHook(t, &walkDir, func(root string, fn fs.WalkDirFunc) error {
+			_ = fn(filepath.Join(root, "blocked.md"), fakeDirEntry{name: "blocked.md"}, errors.New("format callback failed"))
+			return errors.New("format walk failed")
+		})
+		res := Check("../../fixtures/compliant-module", "spec")
+		if res.Passed {
+			t.Fatalf("format walk errors should fail spec profile: %+v", res)
+		}
+		for _, want := range []string{"format callback failed", "format walk failed"} {
+			if !strings.Contains(flattenDetails(res), want) {
+				t.Fatalf("missing %q in %+v", want, res)
+			}
+		}
+	})
+
+	t.Run("open fails", func(t *testing.T) {
+		replaceHook(t, &openScanFile, func(string) (io.ReadCloser, error) {
+			return nil, errors.New("open failed")
+		})
+		res := Check("../../fixtures/compliant-module", "spec")
+		if res.Passed {
+			t.Fatalf("open failure should fail spec profile: %+v", res)
+		}
+		if !strings.Contains(flattenDetails(res), "open failed") {
+			t.Fatalf("missing open failure: %+v", res)
+		}
+	})
+
+	t.Run("scanner fails", func(t *testing.T) {
+		replaceHook(t, &openScanFile, func(string) (io.ReadCloser, error) {
+			return failingReadCloser{}, nil
+		})
+		res := Check("../../fixtures/compliant-module", "spec")
+		if res.Passed {
+			t.Fatalf("scanner failure should fail spec profile: %+v", res)
+		}
+		if !strings.Contains(flattenDetails(res), "scan failed") {
+			t.Fatalf("missing scanner failure: %+v", res)
+		}
+	})
+
+	t.Run("line rules", func(t *testing.T) {
+		table := markdownTableState{}
+		var issues []string
+		issues = append(issues, formatLineIssues("doc.md", 1, "| A | B |", &table)...)
+		issues = append(issues, formatLineIssues("doc.md", 2, "| A | B | C |", &table)...)
+		issues = append(issues, formatLineIssues("doc.md", 3, "", &table)...)
+		issues = append(issues, formatLineIssues("doc.md", 4, "| A | B |", &table)...)
+		issues = append(issues, formatLineIssues("doc.md", 5, "[ok](README.md) [bad]()", &table)...)
+		detail := strings.Join(issues, "\n")
+		for _, want := range []string{"table column count changed", "empty markdown link target"} {
+			if !strings.Contains(detail, want) {
+				t.Fatalf("issues=%v, want %q", issues, want)
+			}
+		}
+	})
+}
+
+func TestTraceabilityReadFailure(t *testing.T) {
+	replaceHook(t, &readFile, func(path string) ([]byte, error) {
+		return nil, errors.New("trace read failed for " + filepath.Base(path))
+	})
+	res := Check("../../fixtures/compliant-module", "full")
+	if res.Passed {
+		t.Fatalf("trace read failure should fail full profile: %+v", res)
+	}
+	if !strings.Contains(flattenDetails(res), "trace read failed") {
+		t.Fatalf("missing trace read detail: %+v", res)
+	}
+}
+
+func TestTableAndSpecHelpersReportMalformedRows(t *testing.T) {
+	spec := strings.Join([]string{
+		"| ID | Requirement | WHEN | THEN |",
+		"| --- | --- | --- | --- |",
+		"| FR-999 | bad | WHEN triggered | missing outcome |",
+		"| AC ID | FR Ref | Criterion |",
+		"| --- | --- | --- |",
+		"| AC-999 | FR-999 | no testcase here |",
+		"| TC ID | Covers | Command |",
+		"| --- | --- | --- |",
+		"| TC-999 | AC-999 | inspect manually |",
+	}, "\n")
+	for name, issues := range map[string][]string{
+		"fr": functionalRequirementIssues(spec),
+		"ac": acceptanceCriteriaIssues(spec),
+		"tc": testCaseIssues(spec),
+	} {
+		if len(issues) == 0 {
+			t.Fatalf("%s issues empty for malformed rows", name)
+		}
+	}
+	if got := tableRowID("| | | |"); got != "" {
+		t.Fatalf("blank table row id=%q, want empty", got)
+	}
+}
+
+func replaceHook[T any](t *testing.T, target *T, replacement T) {
+	t.Helper()
+	original := *target
+	*target = replacement
+	t.Cleanup(func() {
+		*target = original
+	})
+}
+
+type fakeDirEntry struct {
+	name string
+	dir  bool
+}
+
+func (f fakeDirEntry) Name() string {
+	return f.name
+}
+
+func (f fakeDirEntry) IsDir() bool {
+	return f.dir
+}
+
+func (f fakeDirEntry) Type() fs.FileMode {
+	if f.dir {
+		return fs.ModeDir
+	}
+	return 0
+}
+
+func (f fakeDirEntry) Info() (fs.FileInfo, error) {
+	return nil, errors.New("fake entry has no info")
+}
+
+type failingReadCloser struct{}
+
+func (failingReadCloser) Read([]byte) (int, error) {
+	return 0, errors.New("scan failed")
+}
+
+func (failingReadCloser) Close() error {
+	return nil
+}
+
+type fmtError string
+
+func (e fmtError) Error() string {
+	return string(e)
 }
 
 func snapshotTree(t *testing.T, root string) map[string]string {
