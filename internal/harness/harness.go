@@ -182,7 +182,10 @@ func runCheck(args []string, opts options) int {
 		return 2
 	}
 	res := checkDocs(positional[0], profile)
-	writeResult(opts.stdout, res, asJSON)
+	if err := writeResult(opts.stdout, res, asJSON); err != nil {
+		fmt.Fprintln(opts.stderr, err)
+		return 1
+	}
 	if !res.Passed {
 		return 1
 	}
@@ -260,33 +263,42 @@ func runValidate(args []string, opts options) int {
 		return 1
 	}
 	res := checkDocs(filepath.Join(dir, "module", "template-self"), "full")
-	writeResult(opts.stdout, res, *asJSON)
+	if err := writeResult(opts.stdout, res, *asJSON); err != nil {
+		fmt.Fprintln(opts.stderr, err)
+		return 1
+	}
 	if !res.Passed {
 		return 1
 	}
 	return 0
 }
 
-func writeResult(w io.Writer, res CheckResult, asJSON bool) {
+func writeResult(w io.Writer, res CheckResult, asJSON bool) error {
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(res)
-		return
+		return enc.Encode(res)
+	}
+	var firstErr error
+	remember := func(_ int, err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	status := "PASS"
 	if !res.Passed {
 		status = "FAIL"
 	}
-	fmt.Fprintf(w, "%s %s (%s)\n", status, res.Module, res.Profile)
+	remember(fmt.Fprintf(w, "%s %s (%s)\n", status, res.Module, res.Profile))
 	for _, item := range res.Checks {
 		itemStatus := "PASS"
 		if !item.Passed {
 			itemStatus = "FAIL"
 		}
-		fmt.Fprintf(w, "[%s] %s: %s\n", itemStatus, item.Name, item.Detail)
+		remember(fmt.Fprintf(w, "[%s] %s: %s\n", itemStatus, item.Name, item.Detail))
 	}
-	fmt.Fprintln(w, res.Summary)
+	remember(fmt.Fprintln(w, res.Summary))
+	return firstErr
 }
 
 var moduleNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
@@ -309,11 +321,16 @@ func Generate(module, outputRoot string, force bool) ([]string, error) {
 		return nil, errors.New("refusing to write outside output module directory")
 	}
 	entries := map[string]string{
+		"README.md":                           readmeTemplate(module),
 		"SPEC.md":                             specTemplate(module),
 		"TRACEABILITY.md":                     traceTemplate(module),
 		"goal.md":                             fmt.Sprintf("# %s Goal\n\nDeliver a compliant Foundation module with documented FR, AC, and TC coverage.\n", module),
 		"IMPLEMENTATION-PLAN.md":              fmt.Sprintf("# %s Implementation Plan\n\n1. Confirm SPEC.\n2. Implement tasks.\n3. Verify traceability.\n", module),
+		"ACCEPTANCE.md":                       acceptanceTemplate(module),
+		"FEATURES.md":                         featuresTemplate(module),
 		filepath.Join("tasks", "TASK-001.md"): fmt.Sprintf("# TASK-001 %s bootstrap\n\nImplement and verify the module skeleton.\n", module),
+		"Makefile":                            makefileTemplate(),
+		filepath.Join(".github", "workflows", "ci.yml"): ciWorkflowTemplate(module),
 	}
 	paths := make([]string, 0, len(entries))
 	for rel := range entries {
@@ -373,6 +390,7 @@ func Check(modulePath, profile string) CheckResult {
 		runBoundaryChecks(modulePath, add)
 		runFormatChecks(modulePath, add)
 		runTraceChecks(modulePath, add)
+		runCIReferenceChecks(modulePath, add)
 	default:
 		add("profile", false, "unknown profile: "+profile)
 	}
@@ -520,6 +538,51 @@ func runTraceChecks(modulePath string, add func(string, bool, string)) {
 	add("traceability-chain", len(gaps) == 0, missingDetail(gaps, "FR/AC/TC chain closed"))
 }
 
+func runCIReferenceChecks(modulePath string, add func(string, bool, string)) {
+	var issues []string
+	makefile := filepath.Join(modulePath, "Makefile")
+	if info, err := statPath(makefile); err != nil {
+		issues = append(issues, "missing Makefile at module root")
+	} else if info.IsDir() {
+		issues = append(issues, "Makefile path is a directory, not a file")
+	} else if data, readErr := readFile(makefile); readErr != nil {
+		issues = append(issues, fmt.Sprintf("read Makefile: %v", readErr))
+	} else if !makefileHasCITarget(string(data)) {
+		issues = append(issues, "Makefile has no ci target")
+	}
+	workflowCount := 0
+	walkErr := walkDir(filepath.Join(modulePath, ".github", "workflows"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			issues = append(issues, fmt.Sprintf("%s: %v", filepath.ToSlash(path), err))
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := filepath.Base(path)
+		if strings.HasSuffix(name, ".yml") || strings.HasSuffix(name, ".yaml") {
+			workflowCount++
+		}
+		return nil
+	})
+	if walkErr != nil {
+		issues = append(issues, fmt.Sprintf(".github/workflows not readable: %v", walkErr))
+	} else if workflowCount == 0 {
+		issues = append(issues, ".github/workflows has no workflow (.yml/.yaml) files")
+	}
+	add("ci-reference", len(issues) == 0, missingDetail(issues, "Makefile ci target and GitHub workflow present"))
+}
+
+func makefileHasCITarget(data string) bool {
+	for _, raw := range strings.Split(data, "\n") {
+		line := strings.TrimRight(raw, " \t")
+		if strings.HasPrefix(line, "ci:") || strings.HasPrefix(strings.TrimLeft(raw, " \t"), "ci:") {
+			return true
+		}
+	}
+	return false
+}
+
 func detailForFile(path string, err error) string {
 	if err != nil {
 		return err.Error()
@@ -546,9 +609,15 @@ func missingDetail(items []string, ok string) string {
 
 func countHeadings(text string) int {
 	count := 0
+	inFence := false
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "#") {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence && strings.HasPrefix(scanner.Text(), "#") {
 			count++
 		}
 	}
@@ -786,5 +855,77 @@ func traceTemplate(module string) string {
 | FR ID | AC ID | TC ID | Status |
 | --- | --- | --- | --- |
 | FR-001 | AC-001 | TC-001 | PASS |
+`, module)
+}
+
+func readmeTemplate(module string) string {
+	return fmt.Sprintf(`# %s
+
+> Foundation module entry point.
+
+## Overview
+
+%s is a Foundation module. See SPEC.md for requirements, TRACEABILITY.md for the FR/AC/TC matrix, and ACCEPTANCE.md for verification commands.
+`, module, module)
+}
+
+func acceptanceTemplate(module string) string {
+	return fmt.Sprintf(`# %s Acceptance
+
+| AC ID | Requirement | Command | Expected | Status |
+| --- | --- | --- | --- | --- |
+| AC-001 | Module skeleton is generated and internally consistent | xlib-harness check . --profile full | all gates pass | PASS |
+`, module)
+}
+
+func featuresTemplate(module string) string {
+	return fmt.Sprintf(`# %s Features
+
+| Feature ID | Capability | Status |
+| --- | --- | --- |
+| FR-001 | Module skeleton generation | Implemented |
+`, module)
+}
+
+func makefileTemplate() string {
+	return `.PHONY: build test vet ci
+
+build:
+	go build ./...
+
+test:
+	go test ./...
+
+vet:
+	go vet ./...
+
+ci: build test vet
+`
+}
+
+func ciWorkflowTemplate(module string) string {
+	return fmt.Sprintf(`name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate %s
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - run: make ci
 `, module)
 }

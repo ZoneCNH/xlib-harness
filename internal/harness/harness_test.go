@@ -689,6 +689,175 @@ func TestTableAndSpecHelpersReportMalformedRows(t *testing.T) {
 	}
 }
 
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write stream closed")
+}
+
+func TestWriteResultSurfacesStreamErrors(t *testing.T) {
+	res := CheckResult{Module: "m", Profile: "full", Passed: true, Summary: "ok"}
+
+	if err := writeResult(failingWriter{}, res, true); err == nil {
+		t.Fatal("expected JSON write error to surface")
+	}
+	if err := writeResult(failingWriter{}, res, false); err == nil {
+		t.Fatal("expected text write error to surface")
+	}
+	if err := writeResult(io.Discard, res, true); err != nil {
+		t.Fatalf("discard JSON write should succeed: %v", err)
+	}
+}
+
+func TestRunCheckAndValidatePropagateWriteErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Generate("write-err-module", dir, false); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	modulePath := filepath.Join(dir, "module", "write-err-module")
+
+	var stderr bytes.Buffer
+	if code := Run([]string{"check", modulePath, "--profile", "full", "--json"}, failingWriter{}, &stderr); code != 1 {
+		t.Fatalf("check with failing writer code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "write stream closed") {
+		t.Fatalf("stderr missing write error: %q", stderr.String())
+	}
+
+	stderr.Reset()
+	if code := Run([]string{"validate", "--template", "--json"}, failingWriter{}, &stderr); code != 1 {
+		t.Fatalf("validate with failing writer code=%d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "write stream closed") {
+		t.Fatalf("stderr missing write error: %q", stderr.String())
+	}
+}
+
+func TestCIReferenceChecks(t *testing.T) {
+	t.Run("missing makefile", func(t *testing.T) {
+		dir := t.TempDir()
+		res := Check(dir, "full")
+		if res.Passed {
+			t.Fatalf("expected ci-reference to fail without Makefile: %+v", res)
+		}
+		if !strings.Contains(flattenDetails(res), "missing Makefile") {
+			t.Fatalf("missing Makefile detail: %+v", res)
+		}
+	})
+
+	t.Run("makefile is directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "Makefile"), 0o755); err != nil {
+			t.Fatalf("mkdir Makefile: %v", err)
+		}
+		res := Check(dir, "full")
+		if !strings.Contains(flattenDetails(res), "Makefile path is a directory") {
+			t.Fatalf("expected directory detail: %+v", res)
+		}
+	})
+
+	t.Run("makefile without ci target", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("build:\n\tgo build\n"), 0o644); err != nil {
+			t.Fatalf("write Makefile: %v", err)
+		}
+		res := Check(dir, "full")
+		if !strings.Contains(flattenDetails(res), "no ci target") {
+			t.Fatalf("expected no-ci-target detail: %+v", res)
+		}
+	})
+
+	t.Run("makefile present no workflows", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "Makefile"), []byte("ci:\n\tgo test ./...\n"), 0o644); err != nil {
+			t.Fatalf("write Makefile: %v", err)
+		}
+		res := Check(dir, "full")
+		if !strings.Contains(flattenDetails(res), ".github/workflows") {
+			t.Fatalf("expected workflow detail: %+v", res)
+		}
+	})
+
+	t.Run("compliant passes ci-reference", func(t *testing.T) {
+		res := Check("../../fixtures/compliant-module", "full")
+		if !res.Passed {
+			t.Fatalf("compliant module should pass full incl ci-reference: %+v", res)
+		}
+	})
+
+	t.Run("read makefile error", func(t *testing.T) {
+		replaceHook(t, &readFile, func(string) ([]byte, error) {
+			return nil, errors.New("makefile read denied")
+		})
+		res := Check("../../fixtures/compliant-module", "full")
+		if !strings.Contains(flattenDetails(res), "makefile read denied") {
+			t.Fatalf("expected read error detail: %+v", res)
+		}
+	})
+
+	t.Run("workflow walk error", func(t *testing.T) {
+		replaceHook(t, &walkDir, func(root string, fn fs.WalkDirFunc) error {
+			return errors.New("workflow walk denied")
+		})
+		res := Check("../../fixtures/compliant-module", "full")
+		if !strings.Contains(flattenDetails(res), "workflow walk denied") {
+			t.Fatalf("expected walk error detail: %+v", res)
+		}
+	})
+}
+
+func TestMakefileHasCITarget(t *testing.T) {
+	cases := map[string]bool{
+		"ci:\n\tgo test\n":    true,
+		"ci: build test\n":    true,
+		"build:\n\tgo build\n": false,
+		"science:\n\tstudy\n": false,
+		"":                    false,
+		"\n\nall: ci\n\tci\n": false,
+		"   ci:\n\techo hi\n": true,
+	}
+	for content, want := range cases {
+		if got := makefileHasCITarget(content); got != want {
+			t.Fatalf("makefileHasCITarget(%q)=%v want %v", content, got, want)
+		}
+	}
+}
+
+func TestCountHeadingsIgnoresFencedCode(t *testing.T) {
+	withFence := strings.Join([]string{
+		"# Title",
+		"",
+		"```",
+		"# not a heading",
+		"## also not",
+		"```",
+		"",
+		"## Real heading",
+	}, "\n")
+	if got := countHeadings(withFence); got != 2 {
+		t.Fatalf("countHeadings with fence=%d want 2", got)
+	}
+}
+
+func TestGenerateEmitsCIReadyAssets(t *testing.T) {
+	dir := t.TempDir()
+	files, err := Generate("ci-ready", dir, false)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	want := []string{
+		"README.md", "SPEC.md", "TRACEABILITY.md", "goal.md",
+		"IMPLEMENTATION-PLAN.md", "ACCEPTANCE.md", "FEATURES.md",
+		filepath.Join("tasks", "TASK-001.md"),
+		"Makefile", filepath.Join(".github", "workflows", "ci.yml"),
+	}
+	for _, rel := range want {
+		if _, err := os.Stat(filepath.Join(dir, "module", "ci-ready", rel)); err != nil {
+			t.Fatalf("missing generated %s: %v; files=%v", rel, err, files)
+		}
+	}
+}
+
 func replaceHook[T any](t *testing.T, target *T, replacement T) {
 	t.Helper()
 	original := *target
