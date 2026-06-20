@@ -61,13 +61,14 @@ jobs:
           go-version: "1.23"
           cache: true
       - name: Install xlibgate
-        run: go install github.com/ZoneCNH/xlibgate/cmd/xlibgate@v1.0.2
+        run: go install github.com/ZoneCNH/xlibgate/cmd/xlibgate@v1.0.0
       - name: Trust alignment checks
         run: |
           set -euo pipefail
           XLIBGATE="$(go env GOPATH)/bin/xlibgate"
-          GOWORK=off "$XLIBGATE" trust identity --repo .
-          GOWORK=off "$XLIBGATE" trust template-residue --repo .
+          GOWORK=off "$XLIBGATE" check imports -path .
+          GOWORK=off "$XLIBGATE" check gomod -path .
+          GOWORK=off "$XLIBGATE" check baseline -path . -expected 1.23
 
   secret-scan:
     name: Secret Scan

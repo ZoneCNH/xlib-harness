@@ -4,11 +4,11 @@
 
 ## 发布状态
 
-- 当前版本：`v0.1.2`
-- 代码验收基线：`xlib-harness` 分支 v0.1.2 候选提交
-- 验收日期：2026-06-19
+- 当前版本：`v0.1.4`
+- 代码验收基线：`xlib-harness` 分支 v0.1.4 候选提交（随发布 tag 固化）
+- 验收日期：2026-06-20
 
-`v0.1.2` 是验收硬化发布，重点补齐生产级 spec/trace/boundary/format 门禁、公开 Go API、CI/CD、Makefile 聚合验收和 100% 语句覆盖率门槛。
+`v0.1.4` 是 CI/CD 发布修复与 Markdown fence 解析硬化发布，重点修正发布工作流的 `xlibgate` 可安装版本 pin，补齐 tilde fence、混合 marker 和短 marker 的 heading 计数回归测试，并继续保持 Makefile 聚合验收和 100% 语句覆盖率门槛。
 
 ## 职责
 
@@ -38,14 +38,14 @@ go test -bench=. ./...
 make ci
 ```
 
-2026-06-19 本地验收结果：
+2026-06-20 本地验收结果：
 
 - `go test ./...`：PASS
 - `go test ./... -race -count=1`：PASS
 - `go vet ./...`：PASS
 - `go test ./... -coverprofile=coverage.out -covermode=count`：PASS
 - `go tool cover -func=coverage.out`：total `100.0%`
-- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `113809 ns/op`，`BenchmarkCheckFullProfile` 约 `733850 ns/op`
+- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `439979 ns/op`，`BenchmarkCheckFullProfile` 约 `4802818 ns/op`
 - `make ci`：PASS
 
 ## 相关文档

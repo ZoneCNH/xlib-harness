@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.4 - 2026-06-20
+
+- CI/CD 发布工作流的 `xlibgate` 安装 pin 从不存在的 `v1.0.2` 修正为已发布且可安装的 `v1.0.0`，避免 GitHub Actions 在 trust alignment 步骤因 unknown revision 失败。
+- `countHeadings` 补齐 CommonMark fence 语义：支持 backtick 与 tilde fence，关闭 fence 时要求同 marker 且长度不短于开启 fence，混合 marker 和短 marker 不再错误切换 fence 状态。
+- README 发布状态提升到 `v0.1.4`，本地验收基线与 release patch tag 对齐。
+
+### 验证
+
+- `go test ./...`：PASS
+- `go test ./... -race -count=1`：PASS
+- `go vet ./...`：PASS
+- `go test ./... -coverprofile=coverage.out -covermode=count`：PASS
+- `go tool cover -func=coverage.out`：total `100.0%`
+- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `439979 ns/op`，`BenchmarkCheckFullProfile` 约 `4802818 ns/op`
+- `make ci`：PASS（compliant full 15 项、module-with-bad-dep/broken-trace 负例如预期失败）
+
 ## v0.1.3 - 2026-06-20
 
 - `generate` 现在产出完整的标准模块资产集：README、SPEC、TRACEABILITY、goal、IMPLEMENTATION-PLAN、ACCEPTANCE、FEATURES、tasks/TASK-001，外加 `Makefile` 与 `.github/workflows/ci.yml` 桩——脚手架模块开箱即 CI-ready（兑现 FR-001）。

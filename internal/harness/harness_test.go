@@ -808,13 +808,13 @@ func TestCIReferenceChecks(t *testing.T) {
 
 func TestMakefileHasCITarget(t *testing.T) {
 	cases := map[string]bool{
-		"ci:\n\tgo test\n":    true,
-		"ci: build test\n":    true,
+		"ci:\n\tgo test\n":     true,
+		"ci: build test\n":     true,
 		"build:\n\tgo build\n": false,
-		"science:\n\tstudy\n": false,
-		"":                    false,
-		"\n\nall: ci\n\tci\n": false,
-		"   ci:\n\techo hi\n": true,
+		"science:\n\tstudy\n":  false,
+		"":                     false,
+		"\n\nall: ci\n\tci\n":  false,
+		"   ci:\n\techo hi\n":  true,
 	}
 	for content, want := range cases {
 		if got := makefileHasCITarget(content); got != want {
@@ -824,18 +824,77 @@ func TestMakefileHasCITarget(t *testing.T) {
 }
 
 func TestCountHeadingsIgnoresFencedCode(t *testing.T) {
-	withFence := strings.Join([]string{
-		"# Title",
-		"",
-		"```",
-		"# not a heading",
-		"## also not",
-		"```",
-		"",
-		"## Real heading",
-	}, "\n")
-	if got := countHeadings(withFence); got != 2 {
-		t.Fatalf("countHeadings with fence=%d want 2", got)
+	cases := []struct {
+		name string
+		text string
+		want int
+	}{
+		{
+			name: "backtick fence",
+			text: strings.Join([]string{
+				"# Title",
+				"",
+				"```",
+				"# not a heading",
+				"## also not",
+				"```",
+				"",
+				"## Real heading",
+			}, "\n"),
+			want: 2,
+		},
+		{
+			name: "tilde fence",
+			text: strings.Join([]string{
+				"# Title",
+				"~~~go",
+				"# not a heading",
+				"~~~",
+				"## Real heading",
+			}, "\n"),
+			want: 2,
+		},
+		{
+			name: "mixed marker does not close fence",
+			text: strings.Join([]string{
+				"# Title",
+				"```",
+				"~~~",
+				"# still not a heading",
+				"```",
+				"## Real heading",
+			}, "\n"),
+			want: 2,
+		},
+		{
+			name: "short marker is not a fence",
+			text: strings.Join([]string{
+				"# Title",
+				"``",
+				"``x",
+				"## Real heading",
+			}, "\n"),
+			want: 2,
+		},
+		{
+			name: "shorter closing marker keeps fence open",
+			text: strings.Join([]string{
+				"# Title",
+				"````",
+				"```",
+				"# still not a heading",
+				"````",
+				"## Real heading",
+			}, "\n"),
+			want: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countHeadings(tc.text); got != tc.want {
+				t.Fatalf("countHeadings=%d want %d", got, tc.want)
+			}
+		})
 	}
 }
 

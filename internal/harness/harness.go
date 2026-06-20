@@ -610,18 +610,52 @@ func missingDetail(items []string, ok string) string {
 func countHeadings(text string) int {
 	count := 0
 	inFence := false
+	var fenceMarker rune
+	var fenceLength int
 	scanner := bufio.NewScanner(strings.NewReader(text))
 	for scanner.Scan() {
-		trimmed := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(trimmed, "```") {
-			inFence = !inFence
+		line := scanner.Text()
+		if marker, length, ok := markdownFenceDelimiter(line); ok {
+			if !inFence {
+				inFence = true
+				fenceMarker = marker
+				fenceLength = length
+				continue
+			}
+			if marker == fenceMarker && length >= fenceLength {
+				inFence = false
+				fenceMarker = 0
+				fenceLength = 0
+			}
 			continue
 		}
-		if !inFence && strings.HasPrefix(scanner.Text(), "#") {
+		if !inFence && strings.HasPrefix(line, "#") {
 			count++
 		}
 	}
 	return count
+}
+
+func markdownFenceDelimiter(line string) (rune, int, bool) {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 {
+		return 0, 0, false
+	}
+	marker := rune(trimmed[0])
+	if marker != '`' && marker != '~' {
+		return 0, 0, false
+	}
+	length := 0
+	for _, char := range trimmed {
+		if char != marker {
+			break
+		}
+		length++
+	}
+	if length < 3 {
+		return 0, 0, false
+	}
+	return marker, length, true
 }
 
 func missingSpecSections(text string) []string {
