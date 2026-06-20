@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.5 - 2026-06-20
+
+- 新增仓库本体 `FEATURES.md` 与 `ACCEPTANCE.md`，让代码仓库自身携带与公开架构投影一致的功能清单和验收证据。
+- CI/CD 与 Release workflow 的 docs contract 纳入 `FEATURES.md`、`ACCEPTANCE.md` 非空检查，防止后续发布遗漏同步文档。
+- 保持 `v0.1.4` 已修复的 `xlibgate@v1.0.0` trust checks、Markdown fence 解析硬化、full profile 15 项检查和 total 100.0% 覆盖率基线。
+
+### 验证
+
+- `go test ./... -count=1 -covermode=count -coverprofile=/tmp/xlib-harness-v015.cover`：PASS
+- `go tool cover -func=/tmp/xlib-harness-v015.cover`：total `100.0%`
+- `make ci`：PASS
+- `go test -bench=. -run '^$' ./...`：PASS
+- `xlibgate check imports/gomod/baseline`：PASS
+- `git diff --check`：PASS
+
 ## v0.1.4 - 2026-06-20
 
 - CI/CD 发布工作流的 `xlibgate` 安装 pin 从不存在的 `v1.0.2` 修正为已发布且可安装的 `v1.0.0`，避免 GitHub Actions 在 trust alignment 步骤因 unknown revision 失败。

@@ -28,6 +28,8 @@ jobs:
         run: |
           set -euo pipefail
           test -s README.md
+          test -s FEATURES.md
+          test -s ACCEPTANCE.md
           test -s .github/workflows/ci.yml
           grep -q "github.com/ZoneCNH/xlib-harness" README.md
           grep -q "module/xlib-harness/SPEC.md" README.md
