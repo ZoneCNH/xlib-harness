@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.1.6 - 2026-06-20
+
+- 将 CI/CD 的 Secret Scan 从需要私有 license 的 `gitleaks/gitleaks-action@v2` 改为 pinned open-source CLI：`github.com/zricethezav/gitleaks/v8@v8.30.1`。
+- 保持仓库本体 `FEATURES.md`、`ACCEPTANCE.md` 的 docs contract，继续要求 CI/CD 和 Release workflow 校验同步文档。
+- 保持 `v0.1.5` 同步文档发布面、`xlibgate@v1.0.0` trust checks、full profile 15 项检查和 total 100.0% 覆盖率基线。
+
+### 验证
+
+- `go test ./... -count=1 -covermode=count -coverprofile=/tmp/xlib-harness-v016.cover`：PASS
+- `go tool cover -func=/tmp/xlib-harness-v016.cover`：total `100.0%`
+- `make ci`：PASS
+- `go test -bench=. -run '^$' ./...`：PASS
+- `xlibgate check imports/gomod/baseline`：PASS
+- `gitleaks detect --source . --redact --verbose`：PASS
+- `git diff --check`：PASS
+
 ## v0.1.5 - 2026-06-20
 
 - 新增仓库本体 `FEATURES.md` 与 `ACCEPTANCE.md`，让代码仓库自身携带与公开架构投影一致的功能清单和验收证据。

@@ -1,9 +1,9 @@
 # xlib-harness Features
 
 > Module: `xlib-harness`
-> Version: v0.1.5
+> Version: v0.1.6
 > Last-Updated: 2026-06-20
-> Implementation-Baseline: `v0.1.5` tag commit
+> Implementation-Baseline: `v0.1.6` tag commit
 
 ## Feature Summary
 
@@ -43,7 +43,7 @@
 | NFR-002 | Automation-readable JSON output | `xlib-harness check <module> --json` |
 | NFR-003 | Repeatable fixture acceptance | `make ci` |
 | NFR-004 | 100% Go statement coverage | `go tool cover -func=coverage.out` total 100.0% |
-| NFR-005 | Release-gated public documentation | CI and release workflows require `README.md`, `FEATURES.md`, and `ACCEPTANCE.md` |
+| NFR-005 | Release-gated public documentation and secret scan | CI and release workflows require `README.md`, `FEATURES.md`, and `ACCEPTANCE.md`; CI runs pinned gitleaks CLI |
 
 ## Task Coverage
 
@@ -70,6 +70,12 @@ The release candidate score is `100/100` for the requested delivery surface:
 | Release readiness | 100/100 | Final state is tag-published and merged to `main` |
 
 ## Release Notes
+
+### v0.1.6
+
+- Replaces the license-gated `gitleaks/gitleaks-action@v2` CI step with pinned open-source `github.com/zricethezav/gitleaks/v8@v8.30.1` CLI scanning.
+- Keeps repository-local `FEATURES.md` and `ACCEPTANCE.md` in the docs contract for CI and release validation.
+- Preserves the v0.1.5 docs-sync surface, `xlibgate@v1.0.0` trust checks, full-profile 15 checks, and total 100.0% coverage baseline.
 
 ### v0.1.5
 

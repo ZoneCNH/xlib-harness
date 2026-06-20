@@ -1,9 +1,9 @@
 # xlib-harness Acceptance
 
 > Module: `xlib-harness`
-> Version: v0.1.5
+> Version: v0.1.6
 > Last-Updated: 2026-06-20
-> Implementation-Baseline: `v0.1.5` tag commit
+> Implementation-Baseline: `v0.1.6` tag commit
 
 ## Acceptance Matrix
 
@@ -31,6 +31,7 @@
 | Trust Imports | `xlibgate check imports -path .` | PASS |
 | Trust Go Module | `xlibgate check gomod -path .` | PASS |
 | Trust Baseline | `xlibgate check baseline -path . -expected 1.23` | PASS |
+| Secret Scan | `gitleaks detect --source . --redact --verbose` | PASS |
 | Diff Hygiene | `git diff --check` | PASS |
 
 ## Coverage Evidence
@@ -39,19 +40,19 @@
 
 ## Benchmark Evidence
 
-The v0.1.5 release candidate keeps the benchmark gates green:
+The v0.1.6 release candidate keeps the benchmark gates green:
 
 ```text
-BenchmarkGenerate-16             3535    415024 ns/op      25840 B/op       226 allocs/op
-BenchmarkCheckFullProfile-16      537   2274008 ns/op     624178 B/op      5574 allocs/op
+BenchmarkGenerate-16             3098    462076 ns/op      25833 B/op       226 allocs/op
+BenchmarkCheckFullProfile-16      676   2468222 ns/op     626253 B/op      5575 allocs/op
 ```
 
 ## CI/CD Evidence
 
-- `.github/workflows/ci.yml` validates the public docs contract, runs `make ci`, runs `xlibgate@v1.0.0` imports/gomod/baseline trust checks, and executes gitleaks secret scanning.
+- `.github/workflows/ci.yml` validates the public docs contract, runs `make ci`, runs `xlibgate@v1.0.0` imports/gomod/baseline trust checks, and executes pinned `github.com/zricethezav/gitleaks/v8@v8.30.1` CLI secret scanning.
 - `.github/workflows/release.yml` validates the release docs contract, runs `make ci`, runs trust checks, and creates or updates the GitHub Release on `v*` tags.
-- The release tag `v0.1.5` is the canonical published baseline for this acceptance record.
-- The expected GitHub Release location is <https://github.com/ZoneCNH/xlib-harness/releases/tag/v0.1.5>.
+- The release tag `v0.1.6` is the canonical published baseline for this acceptance record.
+- The expected GitHub Release location is <https://github.com/ZoneCNH/xlib-harness/releases/tag/v0.1.6>.
 
 ## Overall Score
 

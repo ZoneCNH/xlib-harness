@@ -4,11 +4,11 @@
 
 ## 发布状态
 
-- 当前版本：`v0.1.5`
-- 代码验收基线：`xlib-harness` 分支 v0.1.5 候选提交（随发布 tag 固化）
+- 当前版本：`v0.1.6`
+- 代码验收基线：`xlib-harness` 分支 v0.1.6 候选提交（随发布 tag 固化）
 - 验收日期：2026-06-20
 
-`v0.1.5` 是代码仓库同步文档与发布合约补齐发布：仓库本体新增 `FEATURES.md` 与 `ACCEPTANCE.md`，CI/CD 和 Release workflow 将这两份文档纳入非空合约检查，并继续保持 Makefile 聚合验收和 100% 语句覆盖率门槛。
+`v0.1.6` 是 CI secret-scan 修复与同步文档基线发布：仓库本体保留 `FEATURES.md` 与 `ACCEPTANCE.md`，CI/CD 和 Release workflow 将这两份文档纳入非空合约检查，Secret Scan 改为 pinned open-source gitleaks CLI，并继续保持 Makefile 聚合验收和 100% 语句覆盖率门槛。
 
 ## 职责
 
@@ -45,7 +45,7 @@ make ci
 - `go vet ./...`：PASS
 - `go test ./... -coverprofile=coverage.out -covermode=count`：PASS
 - `go tool cover -func=coverage.out`：total `100.0%`
-- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `439979 ns/op`，`BenchmarkCheckFullProfile` 约 `4802818 ns/op`
+- `go test -bench=. ./...`：PASS，`BenchmarkGenerate` 约 `462076 ns/op`，`BenchmarkCheckFullProfile` 约 `2468222 ns/op`
 - `make ci`：PASS
 
 ## 相关文档
